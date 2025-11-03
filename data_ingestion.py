@@ -87,7 +87,7 @@ class RedditDataIngestion:
                 user_agent=user_agent or "demo_app",
                 check_for_async=False
             )
-    
+
     def submission_to_dict(self, submission: Submission) -> Dict:
         """
         Convert Reddit submission to dictionary format.
@@ -117,13 +117,14 @@ class RedditDataIngestion:
             'data_type': 'post'
         }
     
-    def comment_to_dict(self, comment: Comment, post_id: str) -> Dict:
+    def comment_to_dict(self, comment: Comment, post_id: str, subreddit_name: str) -> Dict:
         """
         Convert Reddit comment to dictionary format.
         
         Args:
             comment (Comment): PRAW comment object
             post_id (str): ID of the parent post
+            subreddit_name (str): Name of the subreddit the comment belongs to
         
         Returns:
             Dict: Dictionary representation of the comment
@@ -131,6 +132,7 @@ class RedditDataIngestion:
         return {
             'id': comment.id,
             'post_id': post_id,
+            'subreddit': subreddit_name,
             'body': comment.body,
             'author': str(comment.author) if comment.author else '[deleted]',
             'score': comment.score,
@@ -185,62 +187,72 @@ class RedditDataIngestion:
     def fetch_and_store_posts(
         self,
         subreddit_name: str,
-        limit: int = 100,
-        sort_by: str = 'hot',
-        include_comments: bool = False
+        limit: int = 50,
+        comment_limit: int = 10
     ) -> int:
         """
-        Fetch posts from a subreddit and store in MongoDB.
+        Fetch top posts and their comments from a subreddit and store them.
         
         Args:
             subreddit_name (str): Name of the subreddit
             limit (int): Number of posts to fetch
-            sort_by (str): Sort method ('hot', 'new', 'top', 'rising')
-            include_comments (bool): Whether to fetch comments for each post
+            comment_limit (int): Number of top comments to fetch for each post
         
         Returns:
-            int: Number of posts successfully stored
+            int: Number of new documents (posts + comments) inserted
         """
+        logger.info(f"Fetching {limit} posts and up to {comment_limit} comments each from r/{subreddit_name}...")
         try:
-            logger.info(f"🔍 Fetching {limit} {sort_by} posts from r/{subreddit_name}...")
-            
             subreddit = self.reddit.subreddit(subreddit_name)
+            # Fetch newest posts to reduce duplicates
+            hot_posts = subreddit.new(limit=limit)
             
-            # Get submissions based on sort method
-            if sort_by == 'hot':
-                submissions = subreddit.hot(limit=limit)
-            elif sort_by == 'new':
-                submissions = subreddit.new(limit=limit)
-            elif sort_by == 'top':
-                submissions = subreddit.top(limit=limit, time_filter='week')
-            elif sort_by == 'rising':
-                submissions = subreddit.rising(limit=limit)
-            else:
-                submissions = subreddit.hot(limit=limit)
+            total_inserted_count = 0
             
-            inserted_count = 0
-            
-            for submission in submissions:
-                try:
-                    # Convert submission to dict and insert
-                    post_dict = self.submission_to_dict(submission)
-                    
-                    if self.insert_post(post_dict):
-                        inserted_count += 1
+            for post in hot_posts:
+                # Use a list to hold post and its comments for a single bulk insert
+                documents_to_insert = []
+                
+                # Add the post to our list
+                post_dict = self.submission_to_dict(post)
+                documents_to_insert.append(post_dict)
+                
+                # Fetch and add comments for the post
+                if comment_limit > 0:
+                    try:
+                        # PRAW lazy loads comments, so we access the submission again
+                        submission = self.reddit.submission(id=post.id)
+                        submission.comments.replace_more(limit=0)  # Remove "load more comments" links
                         
-                        # Optionally fetch comments
-                        if include_comments:
-                            self._fetch_comments(submission, limit=10)
-                    
-                except Exception as e:
-                    logger.error(f"Error processing submission {submission.id}: {e}")
-                    continue
-            
-            logger.info(f"✅ Successfully stored {inserted_count} posts from r/{subreddit_name}")
-            return inserted_count
+                        comment_count = 0
+                        for top_level_comment in submission.comments:
+                            if comment_count >= comment_limit:
+                                break
+                            comment_dict = self.comment_to_dict(top_level_comment, post.id, post_dict['subreddit'])
+                            documents_to_insert.append(comment_dict)
+                            comment_count += 1
+                            
+                    except Exception as e:
+                        logger.error(f"❌ Error fetching comments for post {post.id}: {e}")
+
+                # Bulk insert post and its comments
+                if documents_to_insert:
+                    try:
+                        # Use ordered=False to continue inserting even if one document fails (e.g., duplicate)
+                        result = self.collection.insert_many(documents_to_insert, ordered=False)
+                        inserted_now = len(result.inserted_ids)
+                        total_inserted_count += inserted_now
+                        logger.debug(f"✅ Inserted {inserted_now} documents for post {post.id}")
+                    except PyMongoError as e:
+                        # This can happen if the post already exists and we try to re-insert it.
+                        # We log it but continue to the next post.
+                        logger.warning(f"⚠️ Skipping insert for post {post.id} due to DB error (likely duplicate): {e}")
+
+            logger.info(f"✅ Finished fetching from r/{subreddit_name}. Total documents inserted: {total_inserted_count}")
+            return total_inserted_count
             
         except Exception as e:
-            logger.error(f"❌ Error fetching posts from r/{subreddit_name}: {e}")
+            logger.error(f"❌ Failed to fetch posts from r/{subreddit_name}: {e}")
             return 0
     
     def _fetch_comments(self, submission: Submission, limit: int = 10):
@@ -254,11 +266,18 @@ class RedditDataIngestion:
         try:
             submission.comments.replace_more(limit=0)
             comments = submission.comments.list()[:limit]
-            
+
+            subreddit_name = str(submission.subreddit)
             for comment in comments:
                 if isinstance(comment, Comment):
-                    comment_dict = self.comment_to_dict(comment, submission.id)
-                    self.insert_post(comment_dict)
+                    comment_dict = self.comment_to_dict(comment, submission.id, subreddit_name)
+                    # Use direct insert to collection since this is a comment document
+                    try:
+                        self.collection.insert_one(comment_dict)
+                    except DuplicateKeyError:
+                        logger.warning(f"⚠️ Comment {comment.id} already exists, skipping")
+                    except Exception as e:
+                        logger.error(f"❌ Error inserting comment {comment.id}: {e}")
                     
         except Exception as e:
             logger.error(f"Error fetching comments for {submission.id}: {e}")
@@ -327,7 +346,7 @@ class RedditDataIngestion:
             logger.error(f"❌ Error searching posts: {e}")
             return []
     
-    def read_post_by_id(self, post_id: str) -> Optional[Dict]:
+    def get_post_by_id(self, post_id: str) -> Optional[Dict]:
         """
         Read a single post by ID.
         
@@ -442,6 +461,55 @@ class RedditDataIngestion:
             logger.error(f"❌ Error deleting posts: {e}")
             return 0
     
+    def delete_subreddit_data(self, subreddit_name: str) -> int:
+        """
+        Delete ALL documents related to a subreddit: posts and comments.
+
+        Strategy:
+        - Find all post IDs for the subreddit (data_type='post' and subreddit match)
+        - Delete comments either tagged with the subreddit or whose post_id is in those IDs
+        - Delete the posts themselves
+
+        Returns the total number of documents deleted.
+        """
+        if not subreddit_name:
+            logger.warning("Subreddit name cannot be empty.")
+            return 0
+
+        try:
+            logger.warning(f"🔥 Deleting all data for subreddit: r/{subreddit_name}...")
+
+            # 1) Collect post IDs for this subreddit
+            post_cursor = self.collection.find(
+                {'data_type': 'post', 'subreddit': subreddit_name},
+                {'id': 1}
+            )
+            post_ids = [doc.get('id') for doc in post_cursor if doc.get('id')]
+
+            # 2) Delete comments linked to these posts OR tagged with the subreddit
+            comment_filter = {
+                'data_type': 'comment',
+                '$or': [
+                    {'subreddit': subreddit_name},
+                    {'post_id': {'$in': post_ids}} if post_ids else {'_id': {'$exists': False}},
+                    {'permalink': {'$regex': f"/r/{subreddit_name}/", '$options': 'i'}}
+                ]
+            }
+            comment_result = self.collection.delete_many(comment_filter)
+
+            # 3) Delete the posts themselves
+            post_result = self.collection.delete_many({'data_type': 'post', 'subreddit': subreddit_name})
+
+            total_deleted = comment_result.deleted_count + post_result.deleted_count
+
+            logger.info(
+                f"✅ Deleted {post_result.deleted_count} posts and {comment_result.deleted_count} comments for r/{subreddit_name} (total {total_deleted})."
+            )
+            return total_deleted
+        except PyMongoError as e:
+            logger.error(f"❌ Failed to delete data for r/{subreddit_name}: {e}")
+            return 0
+
     def delete_duplicates(self) -> int:
         """
         Remove duplicate posts (shouldn't happen with unique index, but useful for cleanup).

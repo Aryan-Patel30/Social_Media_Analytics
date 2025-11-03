@@ -376,7 +376,7 @@ def main():
     # Navigation
     page = st.sidebar.radio(
         "Select View:",
-        ["📊 Overview", "💭 Sentiment Analysis", "🔑 Keyword Analysis", "📱 Subreddit Analysis", "⏰ Time Analysis"]
+        ["📊 Overview", "💭 Sentiment Analysis", "🔑 Keyword Analysis", "📱 Subreddit Analysis", "⏰ Time Analysis", "🔥 Trending Topics"]
     )
     
     st.sidebar.markdown("---")
@@ -587,6 +587,38 @@ def main():
                 st.dataframe(sentiment_subreddit_df, use_container_width=True)
             else:
                 st.info("No sentiment data available by subreddit")
+
+            # Recent comments by subreddit (top 5)
+            st.markdown("---")
+            st.subheader("💬 Recent Comments by Subreddit")
+            try:
+                top_subs = subreddit_df['Subreddit'].head(5).tolist()
+                for sub in top_subs:
+                    # Fetch up to 2 most recent comments per subreddit
+                    comments_cursor = collection.find(
+                        {
+                            'data_type': 'comment',
+                            '$or': [
+                                {'subreddit': sub},
+                                {'permalink': {'$regex': f"/r/{sub}/", '$options': 'i'}}
+                            ]
+                        }
+                    ).sort('created_utc', -1).limit(2)
+                    comments = list(comments_cursor)
+                    if comments:
+                        with st.expander(f"r/{sub} — showing {len(comments)} recent comments"):
+                            for c in comments:
+                                author = c.get('author', '[deleted]')
+                                body = (c.get('body') or '')
+                                snippet = (body[:180] + '...') if len(body) > 200 else body
+                                score = c.get('score', 0)
+                                link = c.get('permalink', '')
+                                st.markdown(f"- **u/{author}** (score: {score}) — [link]({link})\n\n  > {snippet}")
+                    else:
+                        with st.expander(f"r/{sub} — no recent comments found"):
+                            st.write("No comments available")
+            except Exception as e:
+                st.warning(f"Could not load comments: {e}")
         else:
             st.info("No subreddit data available")
     
@@ -629,6 +661,26 @@ def main():
                 st.dataframe(hour_df, use_container_width=True)
         else:
             st.info("No hourly activity data available")
+
+    elif page == "🔥 Trending Topics":
+        st.header("🔥 Trending Topics")
+        st.write("Top keywords from recent, popular posts (TF-IDF)")
+        import pandas as pd
+        topics_path = os.path.join('outputs', 'trending_topics.csv')
+        if os.path.exists(topics_path):
+            try:
+                topics_df = pd.read_csv(topics_path)
+                if not topics_df.empty:
+                    fig = px.bar(topics_df.sort_values('score', ascending=True), x='score', y='topic', orientation='h', title='Trending Keywords')
+                    fig.update_layout(height=500, margin=dict(l=20, r=20, t=60, b=20))
+                    st.plotly_chart(fig, use_container_width=True)
+                    st.dataframe(topics_df, use_container_width=True)
+                else:
+                    st.info("Trending topics file is empty. Run the pipeline to generate it.")
+            except Exception as e:
+                st.error(f"Failed to load trending topics: {e}")
+        else:
+            st.info("Trending topics not found. Run the pipeline to generate outputs/trending_topics.csv")
     
     # Footer
     st.markdown("---")

@@ -67,19 +67,54 @@ def run_pipeline():
         # Step 1: Data Ingestion
         print("\n📥 Step 1/4: Data Ingestion")
         print("-" * 60)
-        from data_ingestion import RedditDataIngestion, create_example_data
+        from data_ingestion import RedditDataIngestion
         
         ingestion = RedditDataIngestion()
         
+        # Optional: Delete data for specific subreddits
+        delete_choice = input("\nDo you want to delete data for any subreddits before fetching? (y/n): ").lower()
+        if delete_choice == 'y':
+            subreddits_to_delete = input("Enter comma-separated names of subreddits to delete: ")
+            if subreddits_to_delete:
+                for subreddit in [s.strip() for s in subreddits_to_delete.split(',')]:
+                    deleted = ingestion.delete_subreddit_data(subreddit)
+                    print(f"Deleted {deleted} documents for r/{subreddit}.")
+
+        # Prompt for subreddits to fetch (no default list, no y/n gate)
+        subreddits_input = input("\nEnter comma-separated subreddits to fetch (leave blank to skip fetching): ")
+        subreddits = [s.strip() for s in subreddits_input.split(',') if s.strip()] if subreddits_input else []
+
+        if subreddits:
+            limit_input = input("How many posts per subreddit? (default: 50): ")
+            limit = int(limit_input) if limit_input.isdigit() else 50
+            
+            comment_limit_input = input("How many comments per post? (default: 5): ")
+            comment_limit = int(comment_limit_input) if comment_limit_input.isdigit() else 5
+
+            print(f"\nFetching {limit} posts from {len(subreddits)} subreddits...")
+            total_fetched = 0
+            for subreddit in subreddits:
+                print(f"Fetching from r/{subreddit}...")
+                try:
+                    fetched_count = ingestion.fetch_and_store_posts(
+                        subreddit_name=subreddit, 
+                        limit=limit, 
+                        comment_limit=comment_limit
+                    )
+                    total_fetched += fetched_count
+                except Exception as e:
+                    logger.error(f"❌ Failed to fetch from r/{subreddit}: {e}")
+            print(f"\nTotal new documents fetched: {total_fetched}")
+
+
         # Check if we have data
         stats = ingestion.get_collection_stats()
         if stats.get('total_posts', 0) == 0:
-            print("No data found. Inserting example data...")
-            example_posts = create_example_data()
-            count = ingestion.insert_posts_bulk(example_posts)
-            print(f"✅ Inserted {count} example posts")
+            print("\nNo data found in the database. The pipeline cannot continue without data.")
+            print("Please run the script again and enter at least one subreddit to fetch data from Reddit.")
+            return False
         else:
-            print(f"✅ Found {stats.get('total_posts', 0)} existing posts")
+            print(f"\n✅ Found {stats.get('total_posts', 0)} total posts in the database for processing.")
         
         # Step 2: Data Cleaning
         print("\n🧹 Step 2/4: Data Cleaning")
@@ -114,20 +149,27 @@ def run_pipeline():
         print(f"📊 Sentiment distribution: {sentiment_stats.get('sentiment_distribution', {})}")
         
         # Step 4: Data Analysis
-        print("\n📊 Step 4/4: Data Analysis")
+        print("\n📊 Step 4/4: Data Analysis & Topic Modeling")
         print("-" * 60)
         from data_analysis import DataAnalysis
-        
+        from topic_modeling import TopicModeler
+
+        # Standard Analysis
         analyzer = DataAnalysis()
         print("Generating comprehensive report...")
-        report = analyzer.get_comprehensive_report()
-        
-        print(f"✅ Generated {len(report)} analysis reports")
-        
-        # Export reports
-        print("💾 Exporting reports to CSV...")
         analyzer.export_report_to_csv()
-        print("✅ Reports exported to outputs/ directory")
+        print("✅ Standard reports exported to outputs/ directory")
+
+        # Topic Modeling
+        print("🔥 Identifying trending topics...")
+        modeler = TopicModeler(ingestion.collection)
+        topics_df = modeler.get_trending_topics()
+        if not topics_df.empty:
+            topics_path = os.path.join('outputs', 'trending_topics.csv')
+            topics_df.to_csv(topics_path, index=False)
+            print(f"✅ Trending topics report saved to {topics_path}")
+        else:
+            print("⚠️ Could not generate trending topics report.")
         
         # Pipeline complete
         print("\n" + "="*60)
