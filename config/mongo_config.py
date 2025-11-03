@@ -5,6 +5,7 @@ Handles database connection and configuration settings.
 
 import os
 import logging
+from urllib.parse import quote_plus
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 from dotenv import load_dotenv
@@ -40,13 +41,24 @@ class MongoDBConnection:
     def __init__(self):
         """Initialize MongoDB connection parameters."""
         if self._client is None:
-            self.mongo_uri = os.getenv('MONGO_URI')
+            # Separate credentials for safe encoding
+            mongo_user = os.getenv('MONGO_USER')
+            mongo_password = os.getenv('MONGO_PASSWORD')
+            mongo_host = os.getenv('MONGO_HOST')
+            
             self.db_name = os.getenv('MONGO_DB_NAME', 'social_media')
             self.collection_name = os.getenv('MONGO_COLLECTION', 'reddit_posts')
-            
-            if not self.mongo_uri:
-                logger.error("MONGO_URI not found in environment variables")
-                raise ValueError("MongoDB URI is required. Please set MONGO_URI in .env file")
+
+            if not all([mongo_user, mongo_password, mongo_host]):
+                logger.error("MONGO_USER, MONGO_PASSWORD, and MONGO_HOST must be set in .env file")
+                raise ValueError("Incomplete MongoDB credentials in .env file")
+
+            # URL-encode username and password
+            encoded_user = quote_plus(mongo_user)
+            encoded_password = quote_plus(mongo_password)
+
+            # Construct the URI safely
+            self.mongo_uri = f"mongodb+srv://{encoded_user}:{encoded_password}@{mongo_host}"
     
     def connect(self):
         """

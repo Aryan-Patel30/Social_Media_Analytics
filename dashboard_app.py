@@ -342,7 +342,7 @@ def main():
     # Initialize connections
     collection, analyzer, sentiment_analyzer, viz_helper = init_connections()
     
-    if not collection or not analyzer:
+    if collection is None or analyzer is None:
         st.error("❌ Failed to connect to database. Please check your configuration.")
         return
     
