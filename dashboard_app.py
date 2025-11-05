@@ -20,6 +20,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.mongo_config import get_collection
 from data_analysis import DataAnalysis
 from sentiment_analysis import SentimentAnalysis
+from utils.sentiment_utils import SentimentAnalyzer
 from utils.visualization_utils import VisualizationHelper
 from topic_modeling import TopicModeler
 
@@ -139,6 +140,18 @@ def load_trending_topics_data(_collection, subreddit=None):
     except Exception as e:
         logger.error(f"Error computing trending topics: {e}")
         return pd.DataFrame(), "error"
+
+
+@st.cache_data(ttl=300)
+def load_trending_titles_data(_collection, subreddit=None, limit=3):
+    """Load trending titles for a subreddit or overall."""
+    try:
+        modeler = TopicModeler(_collection)
+        titles_df = modeler.get_trending_titles(top_n=limit, subreddit=subreddit)
+        return titles_df
+    except Exception as e:
+        logger.error(f"Error loading trending titles: {e}")
+        return pd.DataFrame()
 
 
 def create_sentiment_pie_chart(df):
@@ -833,6 +846,30 @@ def main():
                         f"Not enough recent cleaned posts for r/{subreddit_filter} to extract trending topics."
                     )
 
+        st.markdown("---")
+        st.subheader(f"Trending Titles — {display_label}")
+
+        titles_df = load_trending_titles_data(collection, subreddit=subreddit_filter, limit=3)
+
+        if not titles_df.empty:
+            for idx, row in titles_df.iterrows():
+                title = row.get('title') or "Untitled"
+                score = row.get('score', 0)
+                comments = row.get('num_comments', 0)
+                created = row.get('created_utc', '')
+                permalink = row.get('permalink')
+
+                with st.container():
+                    st.markdown(f"**{idx + 1}. {title}**")
+                    st.caption(f"Score: {score} • Comments: {comments} • {created}")
+                    if permalink:
+                        st.markdown(f"[View on Reddit]({permalink})")
+
+            if len(titles_df) < 3:
+                st.info("Fewer than 3 trending titles available for this selection.")
+        else:
+            st.info("No trending titles available for this selection yet.")
+
     elif page == "💬 Comments Display":
         st.header("💬 Comments Display")
         st.markdown("Explore recent comments with their associated sentiment analysis, grouped by subreddit.")
@@ -886,30 +923,58 @@ def main():
             comments = list(comments_cursor)
 
             if comments:
+                comment_sentiment_helper = SentimentAnalyzer()
                 post_ids = {c.get('post_id') for c in comments if c.get('post_id')}
-                post_titles = {}
+                post_details = {}
                 if post_ids:
                     posts_cursor = collection.find(
                         {'data_type': 'post', 'id': {'$in': list(post_ids)}},
-                        {'id': 1, 'title': 1}
+                        {'id': 1, 'title': 1, 'sentiment_label': 1, 'sentiment_score': 1}
                     )
                     for post in posts_cursor:
-                        post_titles[post.get('id')] = post.get('title') or "Untitled Post"
+                        post_details[post.get('id')] = {
+                            'title': post.get('title') or "Untitled Post",
+                            'sentiment_label': post.get('sentiment_label'),
+                            'sentiment_score': post.get('sentiment_score')
+                        }
 
                 for idx, comment in enumerate(comments, 1):
-                    post_title = post_titles.get(comment.get('post_id'), "Post title unavailable")
-                    comment_text = (comment.get('body') or '').strip()
-                    if comment_text and len(comment_text) > 220:
-                        comment_text = comment_text[:220].rstrip() + "…"
+                    post_meta = post_details.get(comment.get('post_id'), {})
+                    post_title = post_meta.get('title', "Post title unavailable")
+                    post_label = post_meta.get('sentiment_label')
+                    post_score = post_meta.get('sentiment_score')
 
-                    label = comment.get('sentiment_label')
-                    score = comment.get('sentiment_score')
-                    if label and score is not None:
-                        sentiment_display = f"{label} ({score:.3f})"
-                    elif label:
-                        sentiment_display = label
+                    full_comment_text = (comment.get('body') or '').strip()
+                    display_text = full_comment_text
+                    if display_text and len(display_text) > 220:
+                        display_text = display_text[:220].rstrip() + "…"
+
+                    comment_sentiment = None
+                    if full_comment_text:
+                        comment_sentiment = comment_sentiment_helper.analyze_sentiment(full_comment_text)
+
+                    if comment_sentiment:
+                        label = comment_sentiment.get('sentiment_label')
+                        score = comment_sentiment.get('sentiment_score')
+                        if label and score is not None:
+                            sentiment_display = f"{label} ({score:.3f})"
+                        elif score is not None:
+                            sentiment_display = f"{score:.3f}"
+                        elif label:
+                            sentiment_display = label
+                        else:
+                            sentiment_display = "Not analyzed"
                     else:
                         sentiment_display = "Not analyzed"
+
+                    if post_label and post_score is not None:
+                        post_sentiment_display = f"{post_label} ({post_score:.3f})"
+                    elif post_score is not None:
+                        post_sentiment_display = f"{post_score:.3f}"
+                    elif post_label:
+                        post_sentiment_display = post_label
+                    else:
+                        post_sentiment_display = "Not analyzed"
 
                     author = comment.get('author') or "[deleted]"
                     comment_score = comment.get('score', 0)
@@ -917,12 +982,13 @@ def main():
                     with st.container():
                         st.markdown(f"**Comment {idx}**")
                         st.markdown(f"**Post:** {post_title}")
+                        st.caption(f"Post sentiment: {post_sentiment_display}")
+                        st.caption(f"u/{author} • score {comment_score}")
+                        st.write(display_text or "No comment text available.")
                         st.markdown(
-                            f"Sentiment: <span style='color:#1f77b4; font-weight:600;'>{sentiment_display}</span>",
+                            f"<div style='color:#1f77b4; font-weight:600;'>Sentiment: {sentiment_display}</div>",
                             unsafe_allow_html=True
                         )
-                        st.caption(f"u/{author} • score {comment_score}")
-                        st.write(comment_text or "No comment text available.")
                     if idx != len(comments):
                         st.markdown("---")
 

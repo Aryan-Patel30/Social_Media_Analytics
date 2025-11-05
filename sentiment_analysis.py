@@ -78,7 +78,7 @@ class SentimentAnalysis:
                 post['sentiment_label'] = 'Neutral'
                 return post
             
-            # Analyze sentiment using VADER
+            # Analyze sentiment using ensemble (VADER/TextBlob/Transformer)
             sentiment = self.sentiment_analyzer.analyze_sentiment(text, use_vader=True)
             
             # Add sentiment fields to post
@@ -87,6 +87,10 @@ class SentimentAnalysis:
             post['vader_positive'] = sentiment.get('positive_score', 0)
             post['vader_negative'] = sentiment.get('negative_score', 0)
             post['vader_neutral'] = sentiment.get('neutral_score', 0)
+            post['sentiment_confidence'] = sentiment.get('confidence', 0.0)
+            post['transformer_label'] = sentiment.get('transformer_label')
+            post['transformer_score'] = sentiment.get('transformer_score')
+            post['transformer_confidence'] = sentiment.get('transformer_confidence', 0.0)
             
             logger.debug(f"✅ Analyzed sentiment for post: {post.get('id')}")
             return post
@@ -130,7 +134,11 @@ class SentimentAnalysis:
                         'sentiment_label': analyzed_post.get('sentiment_label', 'Neutral'),
                         'vader_positive': analyzed_post.get('vader_positive', 0),
                         'vader_negative': analyzed_post.get('vader_negative', 0),
-                        'vader_neutral': analyzed_post.get('vader_neutral', 0)
+                        'vader_neutral': analyzed_post.get('vader_neutral', 0),
+                        'sentiment_confidence': analyzed_post.get('sentiment_confidence', 0.0),
+                        'transformer_label': analyzed_post.get('transformer_label'),
+                        'transformer_score': analyzed_post.get('transformer_score'),
+                        'transformer_confidence': analyzed_post.get('transformer_confidence', 0.0)
                     }
                     
                     self.collection.update_one(
@@ -182,7 +190,11 @@ class SentimentAnalysis:
                         'sentiment_label': analyzed_post.get('sentiment_label', 'Neutral'),
                         'vader_positive': analyzed_post.get('vader_positive', 0),
                         'vader_negative': analyzed_post.get('vader_negative', 0),
-                        'vader_neutral': analyzed_post.get('vader_neutral', 0)
+                        'vader_neutral': analyzed_post.get('vader_neutral', 0),
+                        'sentiment_confidence': analyzed_post.get('sentiment_confidence', 0.0),
+                        'transformer_label': analyzed_post.get('transformer_label'),
+                        'transformer_score': analyzed_post.get('transformer_score'),
+                        'transformer_confidence': analyzed_post.get('transformer_confidence', 0.0)
                     }
                     
                     self.collection.update_one(
@@ -233,7 +245,11 @@ class SentimentAnalysis:
                             'sentiment_label': analyzed_post.get('sentiment_label', 'Neutral'),
                             'vader_positive': analyzed_post.get('vader_positive', 0),
                             'vader_negative': analyzed_post.get('vader_negative', 0),
-                            'vader_neutral': analyzed_post.get('vader_neutral', 0)
+                            'vader_neutral': analyzed_post.get('vader_neutral', 0),
+                            'sentiment_confidence': analyzed_post.get('sentiment_confidence', 0.0),
+                            'transformer_label': analyzed_post.get('transformer_label'),
+                            'transformer_score': analyzed_post.get('transformer_score'),
+                            'transformer_confidence': analyzed_post.get('transformer_confidence', 0.0)
                         }
                         
                         self.collection.update_one(

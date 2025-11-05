@@ -112,3 +112,41 @@ class TopicModeler:
         except Exception as e:
             logger.error(f"❌ Error getting trending topics: {e}")
             return pd.DataFrame(columns=['topic', 'score'])
+
+    def get_trending_titles(self, top_n: int = 3, subreddit: Optional[str] = None) -> pd.DataFrame:
+        """Return top trending post titles, prioritizing score and recency."""
+        try:
+            query = {
+                "data_type": "post",
+                "clean_text": {"$exists": True, "$ne": ""}
+            }
+
+            if subreddit:
+                query["subreddit"] = subreddit
+
+            cursor = (
+                self.collection.find(
+                    query,
+                    {
+                        'title': 1,
+                        'score': 1,
+                        'num_comments': 1,
+                        'created_utc': 1,
+                        'subreddit': 1,
+                        'permalink': 1
+                    }
+                )
+                .sort([('score', -1), ('created_utc', -1)])
+                .limit(top_n)
+            )
+
+            posts = list(cursor)
+            if not posts:
+                return pd.DataFrame(columns=['title', 'score', 'num_comments', 'created_utc', 'subreddit', 'permalink'])
+
+            df = pd.DataFrame(posts)
+            return df
+
+        except Exception as e:
+            logger.error(f"❌ Error getting trending titles: {e}")
+            return pd.DataFrame(columns=['title', 'score', 'num_comments', 'created_utc', 'subreddit', 'permalink'])
