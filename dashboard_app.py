@@ -21,6 +21,7 @@ from config.mongo_config import get_collection
 from data_analysis import DataAnalysis
 from sentiment_analysis import SentimentAnalysis
 from utils.visualization_utils import VisualizationHelper
+from topic_modeling import TopicModeler
 
 # Configure logging
 logging.basicConfig(
@@ -109,6 +110,35 @@ def load_sentiment_by_subreddit(_analyzer, limit=10):
 def load_posts_by_hour(_analyzer):
     """Load posts by hour data."""
     return _analyzer.get_posts_by_hour()
+
+
+@st.cache_data(ttl=300)
+def load_trending_topics_data(_collection, subreddit=None):
+    """Load trending topics from CSV or compute on demand."""
+    topics_path = os.path.join('outputs', 'trending_topics.csv')
+
+    if subreddit is None:
+        if os.path.exists(topics_path):
+            try:
+                df = pd.read_csv(topics_path)
+                if not df.empty:
+                    return df, "file"
+            except Exception as e:
+                logger.warning(f"Failed to read trending topics file: {e}")
+
+    try:
+        modeler = TopicModeler(_collection)
+        df = modeler.get_trending_topics(subreddit=subreddit)
+        if subreddit is None and not df.empty:
+            try:
+                os.makedirs('outputs', exist_ok=True)
+                df.to_csv(topics_path, index=False)
+            except Exception as write_err:
+                logger.warning(f"Could not cache trending topics to CSV: {write_err}")
+        return df, "computed"
+    except Exception as e:
+        logger.error(f"Error computing trending topics: {e}")
+        return pd.DataFrame(), "error"
 
 
 def create_sentiment_pie_chart(df):
@@ -376,7 +406,15 @@ def main():
     # Navigation
     page = st.sidebar.radio(
         "Select View:",
-        ["📊 Overview", "💭 Sentiment Analysis", "🔑 Keyword Analysis", "📱 Subreddit Analysis", "⏰ Time Analysis", "🔥 Trending Topics"]
+        [
+            "📊 Overview",
+            "💭 Sentiment Analysis",
+            "🔑 Keyword Analysis",
+            "📱 Subreddit Analysis",
+            "⏰ Time Analysis",
+            "🔥 Trending Topics",
+            "💬 Comments Display"
+        ]
     )
     
     st.sidebar.markdown("---")
@@ -528,6 +566,80 @@ def main():
             display_wordcloud()
         else:
             display_wordcloud(wordcloud_option)
+
+        st.markdown("---")
+        st.subheader("📄 Post Sentiment Samples")
+
+        try:
+            sentiment_subreddits = sorted(
+                collection.distinct(
+                    'subreddit',
+                    {'data_type': 'post', 'sentiment_score': {'$exists': True}}
+                )
+            )
+        except Exception as e:
+            sentiment_subreddits = []
+            st.warning(f"Could not load subreddit list: {e}")
+
+        if sentiment_subreddits:
+            sentiment_sub = st.selectbox(
+                "Select a subreddit to review analyzed posts:",
+                sentiment_subreddits,
+                key="sentiment_post_subreddit"
+            )
+
+            posts_cursor = collection.find(
+                {
+                    'data_type': 'post',
+                    'subreddit': sentiment_sub,
+                    'sentiment_score': {'$exists': True}
+                },
+                {
+                    'title': 1,
+                    'sentiment_label': 1,
+                    'sentiment_score': 1,
+                    'clean_text': 1,
+                    'body': 1,
+                    'selftext': 1
+                }
+            ).sort('created_utc', -1).limit(30)
+
+            sentiment_posts = list(posts_cursor)
+
+            if sentiment_posts:
+                total_posts = len(sentiment_posts)
+                for idx, post in enumerate(sentiment_posts, 1):
+                    title = post.get('title') or "Untitled Post"
+                    label = post.get('sentiment_label') or "Not labeled"
+                    score = post.get('sentiment_score')
+                    if score is not None:
+                        sentiment_text = f"{label} ({score:.3f})"
+                    else:
+                        sentiment_text = label
+
+                    text_source = (
+                        (post.get('clean_text') or '').strip()
+                        or (post.get('body') or '').strip()
+                        or (post.get('selftext') or '').strip()
+                    )
+                    snippet = text_source
+                    if snippet and len(snippet) > 220:
+                        snippet = snippet[:220].rstrip() + "…"
+
+                    with st.container():
+                        st.markdown(f"**Post {idx}: {title}**")
+                        st.markdown(
+                            f"Sentiment: <span style='color:#1f77b4; font-weight:600;'>{sentiment_text}</span>",
+                            unsafe_allow_html=True
+                        )
+                        st.caption(snippet if snippet else "No text available for this post.")
+
+                    if idx != total_posts:
+                        st.markdown("---")
+            else:
+                st.info("No analyzed posts available for this subreddit yet.")
+        else:
+            st.info("No analyzed posts available to display sentiment samples.")
     
     elif page == "🔑 Keyword Analysis":
         st.header("🔑 Keyword Analysis")
@@ -664,23 +776,160 @@ def main():
 
     elif page == "🔥 Trending Topics":
         st.header("🔥 Trending Topics")
-        st.write("Top keywords from recent, popular posts (TF-IDF)")
-        import pandas as pd
-        topics_path = os.path.join('outputs', 'trending_topics.csv')
-        if os.path.exists(topics_path):
-            try:
-                topics_df = pd.read_csv(topics_path)
-                if not topics_df.empty:
-                    fig = px.bar(topics_df.sort_values('score', ascending=True), x='score', y='topic', orientation='h', title='Trending Keywords')
-                    fig.update_layout(height=500, margin=dict(l=20, r=20, t=60, b=20))
-                    st.plotly_chart(fig, use_container_width=True)
-                    st.dataframe(topics_df, use_container_width=True)
-                else:
-                    st.info("Trending topics file is empty. Run the pipeline to generate it.")
-            except Exception as e:
-                st.error(f"Failed to load trending topics: {e}")
+        st.write("Discover what each subreddit is talking about right now.")
+
+        try:
+            topic_subreddits = sorted(
+                collection.distinct(
+                    'subreddit',
+                    {'data_type': 'post', 'clean_text': {'$exists': True, '$ne': ''}}
+                )
+            )
+        except Exception as e:
+            topic_subreddits = []
+            st.warning(f"Could not load subreddit list: {e}")
+
+        subreddit_options = ["All Subreddits"] + topic_subreddits if topic_subreddits else ["All Subreddits"]
+
+        selected_topic_sub = st.selectbox(
+            "Select subreddit:",
+            subreddit_options,
+            key="trending_topics_subreddit"
+        )
+
+        subreddit_filter = None if selected_topic_sub == "All Subreddits" else selected_topic_sub
+        display_label = "All Subreddits" if subreddit_filter is None else f"r/{subreddit_filter}"
+
+        topics_df, source = load_trending_topics_data(collection, subreddit=subreddit_filter)
+
+        st.subheader(f"Trending Keywords — {display_label}")
+
+        if not topics_df.empty:
+            fig = px.bar(
+                topics_df.sort_values('score', ascending=True),
+                x='score',
+                y='topic',
+                orientation='h',
+                title=None
+            )
+            fig.update_layout(height=500, margin=dict(l=20, r=20, t=60, b=20))
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(topics_df, use_container_width=True)
+
+            if source == "computed" and subreddit_filter is None:
+                st.caption("Computed live from the latest cleaned posts.")
         else:
-            st.info("Trending topics not found. Run the pipeline to generate outputs/trending_topics.csv")
+            if source == "error":
+                st.error(
+                    "Could not compute trending topics. Please check the logs or rerun the data pipeline."
+                )
+            else:
+                if subreddit_filter is None:
+                    st.info(
+                        "Trending topics are not available yet. Run the pipeline or fetch more data to generate insights."
+                    )
+                else:
+                    st.info(
+                        f"Not enough recent cleaned posts for r/{subreddit_filter} to extract trending topics."
+                    )
+
+    elif page == "💬 Comments Display":
+        st.header("💬 Comments Display")
+        st.markdown("Explore recent comments with their associated sentiment analysis, grouped by subreddit.")
+
+        try:
+            comment_subreddits = sorted(
+                collection.distinct('subreddit', {'data_type': 'comment'})
+            )
+        except Exception as e:
+            comment_subreddits = []
+            st.warning(f"Could not load subreddit list: {e}")
+
+        if comment_subreddits:
+            comment_sub = st.selectbox(
+                "Select a subreddit to view comments:",
+                comment_subreddits,
+                key="comment_display_subreddit"
+            )
+            comment_limit = st.slider(
+                "Number of comments to display:",
+                min_value=5,
+                max_value=50,
+                value=10,
+                step=5
+            )
+
+            comment_query = {
+                'data_type': 'comment',
+                '$or': [
+                    {'subreddit': comment_sub},
+                    {
+                        'subreddit': {'$exists': False},
+                        'permalink': {'$regex': f"/r/{comment_sub}/", '$options': 'i'}
+                    }
+                ]
+            }
+
+            comments_cursor = collection.find(
+                comment_query,
+                {
+                    'post_id': 1,
+                    'body': 1,
+                    'sentiment_label': 1,
+                    'sentiment_score': 1,
+                    'permalink': 1,
+                    'author': 1,
+                    'score': 1
+                }
+            ).sort('created_utc', -1).limit(comment_limit)
+
+            comments = list(comments_cursor)
+
+            if comments:
+                post_ids = {c.get('post_id') for c in comments if c.get('post_id')}
+                post_titles = {}
+                if post_ids:
+                    posts_cursor = collection.find(
+                        {'data_type': 'post', 'id': {'$in': list(post_ids)}},
+                        {'id': 1, 'title': 1}
+                    )
+                    for post in posts_cursor:
+                        post_titles[post.get('id')] = post.get('title') or "Untitled Post"
+
+                for idx, comment in enumerate(comments, 1):
+                    post_title = post_titles.get(comment.get('post_id'), "Post title unavailable")
+                    comment_text = (comment.get('body') or '').strip()
+                    if comment_text and len(comment_text) > 220:
+                        comment_text = comment_text[:220].rstrip() + "…"
+
+                    label = comment.get('sentiment_label')
+                    score = comment.get('sentiment_score')
+                    if label and score is not None:
+                        sentiment_display = f"{label} ({score:.3f})"
+                    elif label:
+                        sentiment_display = label
+                    else:
+                        sentiment_display = "Not analyzed"
+
+                    author = comment.get('author') or "[deleted]"
+                    comment_score = comment.get('score', 0)
+
+                    with st.container():
+                        st.markdown(f"**Comment {idx}**")
+                        st.markdown(f"**Post:** {post_title}")
+                        st.markdown(
+                            f"Sentiment: <span style='color:#1f77b4; font-weight:600;'>{sentiment_display}</span>",
+                            unsafe_allow_html=True
+                        )
+                        st.caption(f"u/{author} • score {comment_score}")
+                        st.write(comment_text or "No comment text available.")
+                    if idx != len(comments):
+                        st.markdown("---")
+
+            else:
+                st.info("No comments found for this subreddit yet. Try fetching more data.")
+        else:
+            st.info("No comments available in the database yet.")
     
     # Footer
     st.markdown("---")
