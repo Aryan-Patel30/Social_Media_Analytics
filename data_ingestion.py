@@ -188,7 +188,8 @@ class RedditDataIngestion:
         self,
         subreddit_name: str,
         limit: int = 50,
-        comment_limit: int = 10
+        comment_limit: int = 10,
+        max_comments_total: Optional[int] = None
     ) -> int:
         """
         Fetch top posts and their comments from a subreddit and store them.
@@ -208,6 +209,7 @@ class RedditDataIngestion:
             hot_posts = subreddit.new(limit=limit)
             
             total_inserted_count = 0
+            total_comments_for_sub = 0
             
             for post in hot_posts:
                 # Use a list to hold post and its comments for a single bulk insert
@@ -226,11 +228,15 @@ class RedditDataIngestion:
                         
                         comment_count = 0
                         for top_level_comment in submission.comments:
+                            # Stop if we reached the total cap for this subreddit
+                            if max_comments_total is not None and total_comments_for_sub >= max_comments_total:
+                                break
                             if comment_count >= comment_limit:
                                 break
                             comment_dict = self.comment_to_dict(top_level_comment, post.id, post_dict['subreddit'])
                             documents_to_insert.append(comment_dict)
                             comment_count += 1
+                            total_comments_for_sub += 1
                             
                     except Exception as e:
                         logger.error(f"❌ Error fetching comments for post {post.id}: {e}")

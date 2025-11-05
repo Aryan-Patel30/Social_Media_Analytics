@@ -91,6 +91,9 @@ def run_pipeline():
             comment_limit_input = input("How many comments per post? (default: 5): ")
             comment_limit = int(comment_limit_input) if comment_limit_input.isdigit() else 5
 
+            max_comments_total_input = input("Max total comments per subreddit (optional, blank = no cap): ")
+            max_comments_total = int(max_comments_total_input) if max_comments_total_input.isdigit() else None
+
             print(f"\nFetching {limit} posts from {len(subreddits)} subreddits...")
             total_fetched = 0
             for subreddit in subreddits:
@@ -99,7 +102,8 @@ def run_pipeline():
                     fetched_count = ingestion.fetch_and_store_posts(
                         subreddit_name=subreddit, 
                         limit=limit, 
-                        comment_limit=comment_limit
+                        comment_limit=comment_limit,
+                        max_comments_total=max_comments_total
                     )
                     total_fetched += fetched_count
                 except Exception as e:

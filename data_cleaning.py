@@ -97,8 +97,8 @@ class DataCleaning:
             int: Number of posts cleaned
         """
         try:
-            # Find posts without clean_text field
-            query = {'clean_text': {'$exists': False}}
+            # Find posts (not comments) without clean_text field
+            query = {'data_type': 'post', 'clean_text': {'$exists': False}}
             total_posts = self.collection.count_documents(query)
             
             if total_posts == 0:
@@ -155,6 +155,7 @@ class DataCleaning:
         """
         try:
             query = {
+                'data_type': 'post',
                 'subreddit': subreddit,
                 'clean_text': {'$exists': False}
             }
@@ -202,14 +203,14 @@ class DataCleaning:
             int: Number of posts re-cleaned
         """
         try:
-            total_posts = self.collection.count_documents({})
+            total_posts = self.collection.count_documents({'data_type': 'post'})
             logger.info(f"🔄 Re-cleaning {total_posts} posts...")
             
             cleaned_count = 0
             skip = 0
             
             while skip < total_posts:
-                posts = list(self.collection.find().skip(skip).limit(batch_size))
+                posts = list(self.collection.find({'data_type': 'post'}).skip(skip).limit(batch_size))
                 
                 for post in posts:
                     try:
@@ -250,13 +251,13 @@ class DataCleaning:
             Dict: Cleaning statistics
         """
         try:
-            total_posts = self.collection.count_documents({})
-            cleaned_posts = self.collection.count_documents({'clean_text': {'$exists': True}})
+            total_posts = self.collection.count_documents({'data_type': 'post'})
+            cleaned_posts = self.collection.count_documents({'data_type': 'post', 'clean_text': {'$exists': True}})
             uncleaned_posts = total_posts - cleaned_posts
             
             # Get average word count
             pipeline = [
-                {'$match': {'word_count': {'$exists': True}}},
+                {'$match': {'data_type': 'post', 'word_count': {'$exists': True}}},
                 {'$group': {
                     '_id': None,
                     'avg_word_count': {'$avg': '$word_count'},
@@ -298,6 +299,7 @@ class DataCleaning:
         try:
             # Remove posts with less than 3 words in clean_text
             query = {
+                'data_type': 'post',
                 '$or': [
                     {'clean_text': ''},
                     {'clean_text': {'$exists': False}},
@@ -327,7 +329,7 @@ class DataCleaning:
             import json
             
             posts = list(self.collection.find(
-                {'clean_text': {'$exists': True}},
+                {'data_type': 'post', 'clean_text': {'$exists': True}},
                 {'_id': 0}
             ).limit(limit))
             
