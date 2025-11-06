@@ -1,0 +1,18 @@
+MONGO_URI=
+MONGO_DB_NAME=Social_Media_Analytics
+MONGO_COLLECTION=reddit_posts
+MONGO_USER=
+MONGO_PASSWORD=
+MONGO_HOST=
+
+# 🧠 Reddit API (PRAW)
+REDDIT_CLIENT_ID=
+REDDIT_CLIENT_SECRET=
+REDDIT_USER_AGENT=Social_Media_Analytics_app
+
+# ⚙ Other Settings
+ENVIRONMENT=
+LOG_LEVEL=
+
+# Optional: Streamlit Port
+STREAMLIT_SERVER_PORT=
